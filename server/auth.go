@@ -333,24 +333,26 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 
 	// Check if we have trustedKeys defined in the server. If so we require a user jwt.
 	if s.trustedKeys != nil {
-		if c.opts.JWT == "" {
+		if c.opts.JWT == "" && (c.opts.Nkey == "" || s.opts.SystemAccount == "") {
 			s.mu.Unlock()
 			c.Debugf("Authentication requires a user JWT")
 			return false
 		}
-		// So we have a valid user jwt here.
-		juc, err = jwt.DecodeUserClaims(c.opts.JWT)
-		if err != nil {
-			s.mu.Unlock()
-			c.Debugf("User JWT not valid: %v", err)
-			return false
-		}
-		vr := jwt.CreateValidationResults()
-		juc.Validate(vr)
-		if vr.IsBlocking(true) {
-			s.mu.Unlock()
-			c.Debugf("User JWT no longer valid: %+v", vr)
-			return false
+		if c.opts.JWT != "" {
+			// So we have a valid user jwt here.
+			juc, err = jwt.DecodeUserClaims(c.opts.JWT)
+			if err != nil {
+				s.mu.Unlock()
+				c.Debugf("User JWT not valid: %v", err)
+				return false
+			}
+			vr := jwt.CreateValidationResults()
+			juc.Validate(vr)
+			if vr.IsBlocking(true) {
+				s.mu.Unlock()
+				c.Debugf("User JWT no longer valid: %+v", vr)
+				return false
+			}
 		}
 	}
 
@@ -359,7 +361,7 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 	hasUsers := s.users != nil
 	if hasNkeys && c.opts.Nkey != "" {
 		nkey, ok = s.nkeys[c.opts.Nkey]
-		if !ok {
+		if !ok && s.opts.SystemAccount == "" {
 			s.mu.Unlock()
 			return false
 		}
@@ -473,6 +475,32 @@ func (s *Server) processClientOrLeafAuthentication(c *client) bool {
 		// Check if we need to set an auth timer if the user jwt expires.
 		c.checkExpiration(juc.Claims())
 		return true
+	}
+
+	if nkey == nil && c.kind == CLIENT && c.opts.Nkey != "" && s.opts.SystemAccount != "" {
+		var nkeyAcc *Account
+		if acc, ok := s.tmpAccounts.Load(c.opts.Nkey); ok {
+			nkeyAcc = acc.(*Account)
+			c.Debugf("Found Generated Account: %s", nkeyAcc.Name)
+		} else {
+			if sAcc, err := s.lookupAccount(s.opts.SystemAccount); err != nil {
+				c.Debugf("Account JWT lookup error: %v", err)
+				return false
+			} else if jwtClaim, _, err := s.verifyAccountClaims(sAcc.claimJWT); err != nil {
+				c.Debugf("Account JWT verification failed: %v", err)
+				return false
+			} else {
+				jwtClaim.Name = c.opts.Nkey
+				jwtClaim.Subject = c.opts.Nkey
+				claimJwt := jwtClaim.String()
+				nkeyAcc = s.buildInternalAccount(jwtClaim)
+				nkeyAcc.claimJWT = claimJwt
+				c.Debugf("Generated Account: %s", nkeyAcc.Name)
+			}
+		}
+		if nkeyAcc != nil {
+			nkey = &NkeyUser{Nkey: c.opts.Nkey, Account: nkeyAcc /*, Permissions: nkeyAcc.default_permissions*/}
+		}
 	}
 
 	if nkey != nil {
