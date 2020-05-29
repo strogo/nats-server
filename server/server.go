@@ -219,6 +219,9 @@ type Server struct {
 
 	// Websocket structure
 	websocket srvWebsocket
+
+	// MQTT structure
+	mqtt srvMQTT
 }
 
 // Make sure all are 64bits for atomic use
@@ -1349,6 +1352,11 @@ func (s *Server) Start() {
 		s.startWebsocketServer()
 	}
 
+	// MQTT
+	if opts.MQTT.Port != 0 {
+		s.startMQTT()
+	}
+
 	// Start up routing as well if needed.
 	if opts.Cluster.Port != 0 {
 		s.startGoRoutine(func() {
@@ -1438,6 +1446,13 @@ func (s *Server) Shutdown() {
 		s.websocket.server.Close()
 		s.websocket.server = nil
 		s.websocket.listener = nil
+	}
+
+	// Kick MQTT accept loop
+	if s.mqtt.listener != nil {
+		doneExpected++
+		s.mqtt.listener.Close()
+		s.mqtt.listener = nil
 	}
 
 	// Kick leafnodes AcceptLoop()
